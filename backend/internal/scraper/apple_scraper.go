@@ -747,19 +747,22 @@ func (s *AppleScraper) extractSpecsFromDescription(desc string) map[string]inter
 		}
 	}
 
-	// Extract storage from description
-	storagePatterns := []string{
-		`(\d+)[\s\xa0]*TB[\s\xa0]*固态[\s\xa0]*硬盘`,
-		`(\d+)[\s\xa0]*GB[\s\xa0]*固态[\s\xa0]*硬盘`,
-		`(\d+)[\s\xa0]*TB[\s\xa0]*SSD`,
-		`(\d+)[\s\xa0]*GB[\s\xa0]*SSD`,
-		`(\d+)[\s\xa0]*TB[\s\xa0]*storage`,
-		`(\d+)[\s\xa0]*GB[\s\xa0]*storage`,
+	// Extract storage from description - FIXED: capture unit in regex
+	storagePatterns := []struct {
+		pattern string
+		unit    string
+	}{
+		{`(\d+)[\s\xa0]*TB[\s\xa0]*固态[\s\xa0]*硬盘`, "TB"},
+		{`(\d+)[\s\xa0]*GB[\s\xa0]*固态[\s\xa0]*硬盘`, "GB"},
+		{`(\d+)[\s\xa0]*TB[\s\xa0]*SSD`, "TB"},
+		{`(\d+)[\s\xa0]*GB[\s\xa0]*SSD`, "GB"},
+		{`(\d+)[\s\xa0]*TB[\s\xa0]*storage`, "TB"},
+		{`(\d+)[\s\xa0]*GB[\s\xa0]*storage`, "GB"},
 	}
-	for _, pattern := range storagePatterns {
-		re := regexp.MustCompile(pattern)
+	for _, sp := range storagePatterns {
+		re := regexp.MustCompile(sp.pattern)
 		if match := re.FindStringSubmatch(desc); len(match) > 1 {
-			specs["storage"] = match[1] + match[2] // Keep unit
+			specs["storage"] = match[1] + sp.unit
 			break
 		}
 	}

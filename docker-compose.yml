@@ -3,6 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: apple-price-backend:latest
     container_name: apple-price-backend
     restart: unless-stopped
     healthcheck:
@@ -15,13 +16,10 @@ services:
       - ENVIRONMENT=production
       - PORT=8080
       - HOST=0.0.0.0
-      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
-      - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USER=${SMTP_USER:-}
-      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       - SCRAPER_INTERVAL=${SCRAPER_INTERVAL:-5m}
+      - SCRAPER_USER_AGENT=${SCRAPER_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36}
       - DATA_DIR=/data
-      - CORS_ORIGINS=*
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
     volumes:
       - apple-price-data:/data
     networks:
@@ -31,6 +29,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    image: apple-price-frontend:latest
     container_name: apple-price-frontend
     restart: unless-stopped
     depends_on:
@@ -44,7 +43,7 @@ services:
     container_name: apple-price-nginx
     restart: unless-stopped
     ports:
-      - "3003:80"
+      - "${PORT:-3003}:80"
     volumes:
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:

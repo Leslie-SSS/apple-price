@@ -33,6 +33,7 @@ type StoreInterface interface {
 	RemoveNewArrivalSubscription(id string) error
 	GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscription
 	GetNewArrivalSubscription(id string) (*model.NewArrivalSubscription, bool)
+	UpdateNotifiedProductIDs(subscriptionID, productID string) error
 
 	// Statistics operations
 	GetStats() *model.Stats

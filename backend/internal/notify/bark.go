@@ -94,6 +94,18 @@ func (b *BarkService) SendStockNotification(key, productName string, stockStatus
 	return b.SendNotification(key, title, content)
 }
 
+// SendNewArrivalNotification sends a new product arrival notification
+func (b *BarkService) SendNewArrivalNotification(key, productName string, price float64, category, productURL string) error {
+	title := "🆕 苹果翻新新品上架"
+	content := fmt.Sprintf("[%s] %s 到货了！价格: ¥%.0f", category, productName, price)
+
+	if productURL != "" {
+		content += fmt.Sprintf("?url=%s", url.QueryEscape(productURL))
+	}
+
+	return b.SendNotification(key, title, content)
+}
+
 // SendBatchNotification sends a batch notification for multiple products
 func (b *BarkService) SendBatchNotification(key string, changes []PriceChange) error {
 	if len(changes) == 0 {

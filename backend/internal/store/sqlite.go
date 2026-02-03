@@ -138,6 +138,15 @@ func (s *SQLiteStore) migrate() error {
 	// Add target_price column to subscriptions if it doesn't exist (for existing databases)
 	s.db.Exec(`ALTER TABLE subscriptions ADD COLUMN target_price REAL DEFAULT 0`)
 
+	// Remove email column from subscriptions if it exists (migration)
+	s.db.Exec(`ALTER TABLE subscriptions DROP COLUMN email`)
+
+	// Add notified_product_ids column to new_arrival_subscriptions
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN notified_product_ids TEXT DEFAULT '[]'`)
+
+	// Remove email column from new_arrival_subscriptions if it exists (migration)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions DROP COLUMN email`)
+
 	// SQLite doesn't support "IF NOT EXISTS" for ALTER TABLE, so we ignore the error
 	// if the column already exists
 
@@ -530,9 +539,9 @@ func (s *SQLiteStore) AddSubscription(sub *model.Subscription) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(`
-		INSERT INTO subscriptions (id, product_id, bark_key, email, target_price, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, sub.ID, sub.ProductID, sub.BarkKey, sub.Email, sub.TargetPrice, sub.CreatedAt.Unix())
+		INSERT INTO subscriptions (id, product_id, bark_key, target_price, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, sub.ID, sub.ProductID, sub.BarkKey, sub.TargetPrice, sub.CreatedAt.Unix())
 
 	return err
 }
@@ -565,7 +574,7 @@ func (s *SQLiteStore) GetAllSubscriptions() []*model.Subscription {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, product_id, bark_key, email, target_price, created_at
+		SELECT id, product_id, bark_key, target_price, created_at
 		FROM subscriptions
 		ORDER BY created_at DESC
 	`)
@@ -579,7 +588,7 @@ func (s *SQLiteStore) GetAllSubscriptions() []*model.Subscription {
 		sub := &model.Subscription{}
 		var created int64
 		var targetPrice sql.NullFloat64
-		err := rows.Scan(&sub.ID, &sub.ProductID, &sub.BarkKey, &sub.Email, &targetPrice, &created)
+		err := rows.Scan(&sub.ID, &sub.ProductID, &sub.BarkKey, &targetPrice, &created)
 		if err != nil {
 			continue
 		}
@@ -599,7 +608,7 @@ func (s *SQLiteStore) GetSubscriptionsByProduct(productID string) []*model.Subsc
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, product_id, bark_key, email, target_price, created_at
+		SELECT id, product_id, bark_key, target_price, created_at
 		FROM subscriptions
 		WHERE product_id = ?
 		ORDER BY created_at DESC
@@ -614,7 +623,7 @@ func (s *SQLiteStore) GetSubscriptionsByProduct(productID string) []*model.Subsc
 		sub := &model.Subscription{}
 		var created int64
 		var targetPrice sql.NullFloat64
-		err := rows.Scan(&sub.ID, &sub.ProductID, &sub.BarkKey, &sub.Email, &targetPrice, &created)
+		err := rows.Scan(&sub.ID, &sub.ProductID, &sub.BarkKey, &targetPrice, &created)
 		if err != nil {
 			continue
 		}
@@ -858,10 +867,16 @@ func (s *SQLiteStore) AddNewArrivalSubscription(sub *model.NewArrivalSubscriptio
 		enabled = 0
 	}
 
+	// notified_product_ids defaults to empty JSON array
+	notifiedIDs := sub.NotifiedProductIDs
+	if notifiedIDs == "" {
+		notifiedIDs = "[]"
+	}
+
 	_, err := s.db.Exec(`
-		INSERT INTO new_arrival_subscriptions (id, name, categories, max_price, min_price, keywords, bark_key, email, enabled, created_at)
+		INSERT INTO new_arrival_subscriptions (id, name, categories, max_price, min_price, keywords, bark_key, enabled, created_at, notified_product_ids)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sub.ID, sub.Name, categoriesJSON, sub.MaxPrice, sub.MinPrice, keywordsJSON, sub.BarkKey, sub.Email, enabled, sub.CreatedAt.Unix())
+	`, sub.ID, sub.Name, categoriesJSON, sub.MaxPrice, sub.MinPrice, keywordsJSON, sub.BarkKey, enabled, sub.CreatedAt.Unix(), notifiedIDs)
 
 	return err
 }
@@ -881,7 +896,7 @@ func (s *SQLiteStore) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscri
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, name, categories, max_price, min_price, keywords, bark_key, email, enabled, created_at
+		SELECT id, name, categories, max_price, min_price, keywords, bark_key, enabled, created_at, notified_product_ids
 		FROM new_arrival_subscriptions
 		ORDER BY created_at DESC
 	`)
@@ -894,12 +909,12 @@ func (s *SQLiteStore) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscri
 	for rows.Next() {
 		sub := &model.NewArrivalSubscription{}
 		var created int64
-		var categoriesStr, keywordsStr sql.NullString
-		var barkKey, email sql.NullString
+		var categoriesStr, keywordsStr, notifiedIDsStr sql.NullString
+		var barkKey sql.NullString
 		var enabled int
 		var maxPrice, minPrice sql.NullFloat64
 
-		err := rows.Scan(&sub.ID, &sub.Name, &categoriesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &email, &enabled, &created)
+		err := rows.Scan(&sub.ID, &sub.Name, &categoriesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &enabled, &created, &notifiedIDsStr)
 		if err != nil {
 			continue
 		}
@@ -924,8 +939,10 @@ func (s *SQLiteStore) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscri
 		if barkKey.Valid {
 			sub.BarkKey = barkKey.String
 		}
-		if email.Valid {
-			sub.Email = email.String
+		if notifiedIDsStr.Valid {
+			sub.NotifiedProductIDs = notifiedIDsStr.String
+		} else {
+			sub.NotifiedProductIDs = "[]"
 		}
 		sub.Enabled = enabled == 1
 		if maxPrice.Valid {
@@ -949,15 +966,15 @@ func (s *SQLiteStore) GetNewArrivalSubscription(id string) (*model.NewArrivalSub
 
 	sub := &model.NewArrivalSubscription{}
 	var created int64
-	var categoriesStr, keywordsStr sql.NullString
-	var barkKey, email sql.NullString
+	var categoriesStr, keywordsStr, notifiedIDsStr sql.NullString
+	var barkKey sql.NullString
 	var enabled int
 	var maxPrice, minPrice sql.NullFloat64
 
 	err := s.db.QueryRow(`
-		SELECT id, name, categories, max_price, min_price, keywords, bark_key, email, enabled, created_at
+		SELECT id, name, categories, max_price, min_price, keywords, bark_key, enabled, created_at, notified_product_ids
 		FROM new_arrival_subscriptions WHERE id = ?
-	`, id).Scan(&sub.ID, &sub.Name, &categoriesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &email, &enabled, &created)
+	`, id).Scan(&sub.ID, &sub.Name, &categoriesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &enabled, &created, &notifiedIDsStr)
 
 	if err == sql.ErrNoRows {
 		return nil, false
@@ -985,8 +1002,10 @@ func (s *SQLiteStore) GetNewArrivalSubscription(id string) (*model.NewArrivalSub
 	if barkKey.Valid {
 		sub.BarkKey = barkKey.String
 	}
-	if email.Valid {
-		sub.Email = email.String
+	if notifiedIDsStr.Valid {
+		sub.NotifiedProductIDs = notifiedIDsStr.String
+	} else {
+		sub.NotifiedProductIDs = "[]"
 	}
 	sub.Enabled = enabled == 1
 	if maxPrice.Valid {
@@ -999,4 +1018,55 @@ func (s *SQLiteStore) GetNewArrivalSubscription(id string) (*model.NewArrivalSub
 	sub.CreatedAt = time.Unix(created, 0)
 
 	return sub, true
+}
+
+// UpdateNotifiedProductIDs adds a product ID to the notified list
+func (s *SQLiteStore) UpdateNotifiedProductIDs(subscriptionID, productID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get current notified_product_ids
+	var currentIDs sql.NullString
+	err := s.db.QueryRow("SELECT notified_product_ids FROM new_arrival_subscriptions WHERE id = ?", subscriptionID).Scan(&currentIDs)
+	if err != nil {
+		return err
+	}
+
+	// Parse existing IDs
+	var ids []string
+	if currentIDs.Valid && currentIDs.String != "" && currentIDs.String != "[]" {
+		// Simple JSON parsing for array of strings
+		trimmed := strings.Trim(currentIDs.String, "[]")
+		if trimmed != "" {
+			ids = strings.Split(trimmed, "\",\"")
+			// Clean up quotes
+			for i := range ids {
+				ids[i] = strings.Trim(ids[i], "\"")
+			}
+		}
+	}
+
+	// Check if already notified
+	for _, id := range ids {
+		if id == productID {
+			return nil // Already notified
+		}
+	}
+
+	// Add new ID
+	ids = append(ids, productID)
+
+	// Build JSON array
+	newIDs := "[]"
+	if len(ids) > 0 {
+		quotedIDs := make([]string, len(ids))
+		for i, id := range ids {
+			quotedIDs[i] = "\"" + id + "\""
+		}
+		newIDs = "[" + strings.Join(quotedIDs, ",") + "]"
+	}
+
+	// Update database
+	_, err = s.db.Exec("UPDATE new_arrival_subscriptions SET notified_product_ids = ? WHERE id = ?", newIDs, subscriptionID)
+	return err
 }

@@ -24,6 +24,8 @@ type StoreInterface interface {
 	UpsertProduct(product *model.Product) (priceChanged bool, oldPrice float64)
 	GetProduct(id string) (*model.Product, bool)
 	GetSubscriptionsByProduct(productID string) []*model.Subscription
+	GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscription
+	UpdateNotifiedProductIDs(subscriptionID, productID string) error
 	UpdateLastScrapeTime(t time.Time)
 	GetLastScrapeTime() time.Time
 	Save() error
@@ -33,6 +35,7 @@ type StoreInterface interface {
 // PriceChangeNotifier interface for price change notifications
 type PriceChangeNotifier interface {
 	NotifyPriceChange(product *model.Product, oldPrice, newPrice float64, subscriptions []*model.Subscription) error
+	NotifyNewArrival(product *model.Product, subscriptions []*model.NewArrivalSubscription) error
 }
 
 // NewScheduler creates a new scheduler
@@ -135,9 +138,13 @@ func (s *Scheduler) runScrape() {
 
 	// Upsert all products and track price changes
 	priceChangeCount := 0
+	newProductCount := 0
 
 	for _, product := range products {
 		priceChanged, oldPrice := s.store.UpsertProduct(product)
+
+		// Check if this is a new product (oldPrice == 0 and no price change)
+		isNewProduct := !priceChanged && oldPrice == 0
 
 		if priceChanged && s.notifier != nil {
 			priceChangeCount++
@@ -150,6 +157,23 @@ func (s *Scheduler) runScrape() {
 			if err := s.notifier.NotifyPriceChange(product, oldPrice, product.Price, subscriptions); err != nil {
 				log.Printf("Failed to notify price change: %v", err)
 			}
+		}
+
+		// Notify new arrival subscribers for new products
+		if isNewProduct && s.notifier != nil {
+			newProductCount++
+			log.Printf("New product detected: %s (%s)", product.Name, product.Category)
+
+			// Get all new arrival subscriptions
+			arrivalSubscriptions := s.store.GetAllNewArrivalSubscriptions()
+
+			// Notify matching subscribers
+			if err := s.notifier.NotifyNewArrival(product, arrivalSubscriptions); err != nil {
+				log.Printf("Failed to notify new arrival: %v", err)
+			}
+
+			// Update notified_product_ids for subscriptions that matched
+			// This is done inside NotifyNewArrival via the dispatcher
 		}
 	}
 
@@ -170,8 +194,8 @@ func (s *Scheduler) runScrape() {
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("Scrape cycle completed in %v. Products: %d, Price changes: %d",
-		duration, len(products), priceChangeCount)
+	log.Printf("Scrape cycle completed in %v. Products: %d, Price changes: %d, New products: %d",
+		duration, len(products), priceChangeCount, newProductCount)
 }
 
 // ScrapeNow triggers an immediate scrape

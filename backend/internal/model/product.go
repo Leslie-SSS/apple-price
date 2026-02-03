@@ -40,24 +40,23 @@ type PriceHistory struct {
 type Subscription struct {
 	ID         string    `json:"id"`
 	ProductID  string    `json:"product_id"`
-	BarkKey    string    `json:"bark_key,omitempty"`
-	Email      string    `json:"email,omitempty"`
+	BarkKey    string    `json:"bark_key"`
 	TargetPrice float64  `json:"target_price,omitempty"` // Target price for alert (0 = any drop)
 	CreatedAt  time.Time `json:"created_at"`
 }
 
 // NewArrivalSubscription represents a subscription for new product arrival notifications
 type NewArrivalSubscription struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`        // User-defined name for this subscription
-	Categories []string  `json:"categories"`  // Filter by categories (empty = all)
-	MaxPrice   float64   `json:"max_price"`   // Maximum price filter (0 = no limit)
-	MinPrice   float64   `json:"min_price"`   // Minimum price filter (0 = no limit)
-	Keywords   []string  `json:"keywords"`    // Product name must contain these keywords
-	BarkKey    string    `json:"bark_key,omitempty"`
-	Email      string    `json:"email,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`                // User-defined name for this subscription
+	Categories        []string  `json:"categories"`          // Filter by categories (empty = all)
+	MaxPrice          float64   `json:"max_price"`           // Maximum price filter (0 = no limit)
+	MinPrice          float64   `json:"min_price"`           // Minimum price filter (0 = no limit)
+	Keywords          []string  `json:"keywords"`            // Product name must contain these keywords
+	BarkKey           string    `json:"bark_key"`
+	NotifiedProductIDs string    `json:"notified_product_ids"` // JSON array of product IDs that have been notified
+	Enabled           bool      `json:"enabled"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Stats represents system statistics

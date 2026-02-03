@@ -178,9 +178,8 @@ func (h *Handlers) GetProductHistory(c *gin.Context) {
 // CreateSubscription creates a new subscription
 func (h *Handlers) CreateSubscription(c *gin.Context) {
 	var req struct {
-		ProductID  string  `json:"product_id" binding:"required"`
-		BarkKey    string  `json:"bark_key"`
-		Email      string  `json:"email"`
+		ProductID   string  `json:"product_id" binding:"required"`
+		BarkKey     string  `json:"bark_key" binding:"required"`
 		TargetPrice float64 `json:"target_price"` // Optional target price for alert
 	}
 
@@ -198,12 +197,11 @@ func (h *Handlers) CreateSubscription(c *gin.Context) {
 
 	// Create subscription
 	sub := &model.Subscription{
-		ID:         generateID(),
-		ProductID:  req.ProductID,
-		BarkKey:    req.BarkKey,
-		Email:      req.Email,
+		ID:          generateID(),
+		ProductID:   req.ProductID,
+		BarkKey:     req.BarkKey,
 		TargetPrice: req.TargetPrice,
-		CreatedAt:  time.Now(),
+		CreatedAt:   time.Now(),
 	}
 
 	if err := h.store.AddSubscription(sub); err != nil {
@@ -428,8 +426,8 @@ func (h *Handlers) CreateNewArrivalSubscription(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
-	if req.BarkKey == "" && req.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "either bark_key or email is required"})
+	if req.BarkKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bark_key is required"})
 		return
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -581,4 +582,60 @@ func (s *Store) GetNewArrivalSubscription(id string) (*model.NewArrivalSubscript
 
 	sub, ok := s.newArrivalSubscriptions[id]
 	return sub, ok
+}
+
+// UpdateNotifiedProductIDs adds a product ID to the notified list
+func (s *Store) UpdateNotifiedProductIDs(subscriptionID, productID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.newArrivalSubscriptions == nil {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub, exists := s.newArrivalSubscriptions[subscriptionID]
+	if !exists {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	// Parse existing IDs
+	var ids []string
+	if sub.NotifiedProductIDs != "" && sub.NotifiedProductIDs != "[]" {
+		// Simple JSON parsing
+		trimmed := sub.NotifiedProductIDs[1 : len(sub.NotifiedProductIDs)-1]
+		if trimmed != "" {
+			// Split by comma and clean quotes
+			parts := strings.Split(trimmed, ",")
+			for _, part := range parts {
+				cleaned := strings.TrimSpace(part)
+				cleaned = strings.Trim(cleaned, `"`)
+				if cleaned != "" {
+					ids = append(ids, cleaned)
+				}
+			}
+		}
+	}
+
+	// Check if already notified
+	for _, id := range ids {
+		if id == productID {
+			return nil // Already notified
+		}
+	}
+
+	// Add new ID
+	ids = append(ids, productID)
+
+	// Build JSON array
+	if len(ids) == 0 {
+		sub.NotifiedProductIDs = "[]"
+	} else {
+		quotedIDs := make([]string, len(ids))
+		for i, id := range ids {
+			quotedIDs[i] = "\"" + id + "\""
+		}
+		sub.NotifiedProductIDs = "[" + strings.Join(quotedIDs, ",") + "]"
+	}
+
+	return nil
 }

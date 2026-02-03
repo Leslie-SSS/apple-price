@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { CloseIcon } from './icons'
+import { CloseIcon, InfoIcon } from './icons'
 
 interface NewArrivalSubscription {
   id: string
@@ -9,7 +9,6 @@ interface NewArrivalSubscription {
   min_price: number
   keywords: string[]
   bark_key: string
-  email: string
   enabled: boolean
   created_at: string
 }
@@ -23,6 +22,7 @@ interface NotificationModalProps {
 export default function NotificationModal({ isOpen, onClose, categories }: NotificationModalProps) {
   const [subscriptions, setSubscriptions] = useState<NewArrivalSubscription[]>([])
   const [loading, setLoading] = useState(false)
+  const [showBarkHelp, setShowBarkHelp] = useState(false)
 
   // Form state
   const [name, setName] = useState('')
@@ -30,9 +30,7 @@ export default function NotificationModal({ isOpen, onClose, categories }: Notif
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
   const [keywords, setKeywords] = useState('')
-  const [notifyType, setNotifyType] = useState<'bark' | 'email'>('bark')
   const [barkKey, setBarkKey] = useState('')
-  const [email, setEmail] = useState('')
 
   useEffect(() => {
     if (isOpen) {
@@ -59,13 +57,8 @@ export default function NotificationModal({ isOpen, onClose, categories }: Notif
         name,
         categories: selectedCategories,
         keywords: keywords ? keywords.split(',').map(k => k.trim()).filter(k => k) : [],
+        bark_key: barkKey,
         enabled: true,
-      }
-
-      if (notifyType === 'bark') {
-        payload.bark_key = barkKey
-      } else {
-        payload.email = email
       }
 
       if (minPrice) payload.min_price = parseFloat(minPrice)
@@ -85,7 +78,6 @@ export default function NotificationModal({ isOpen, onClose, categories }: Notif
         setMaxPrice('')
         setKeywords('')
         setBarkKey('')
-        setEmail('')
         fetchSubscriptions()
       }
     } catch (error) {
@@ -133,6 +125,40 @@ export default function NotificationModal({ isOpen, onClose, categories }: Notif
 
           {/* Content */}
           <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)]">
+            {/* Bark Info Box */}
+            <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center flex-shrink-0">
+                  <span className="text-white text-sm">🔔</span>
+                </div>
+                <div className="flex-1">
+                  <h4 className="text-sm font-semibold text-[#1D1D1F] mb-1">使用 Bark 接收推送通知</h4>
+                  <p className="text-xs text-gray-600 mb-2">
+                    Bark 是一款开源的 iOS 推送通知工具。在 App Store 搜索下载 "Bark"，获取推送 Key 后即可接收通知。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowBarkHelp(!showBarkHelp)}
+                    className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                  >
+                    <InfoIcon className="w-3 h-3" />
+                    {showBarkHelp ? '收起使用指南' : '查看使用指南'}
+                  </button>
+                  {showBarkHelp && (
+                    <div className="mt-3 p-3 bg-white rounded-lg text-xs text-gray-600 space-y-2">
+                      <p><strong>步骤 1:</strong> 在 App Store 搜索并下载 "Bark" 应用</p>
+                      <p><strong>步骤 2:</strong> 打开 Bark 应用，首页会显示你的推送 Key</p>
+                      <p><strong>步骤 3:</strong> 复制推送 Key，粘贴到下方输入框中</p>
+                      <p><strong>步骤 4:</strong> 设置订阅条件，保存后即可接收通知</p>
+                      <p className="text-gray-400 pt-2 border-t border-gray-100">
+                        开源项目: <a href="https://github.com/Finb/Bark" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">github.com/Finb/Bark</a>
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Add New Subscription Form */}
             <form onSubmit={handleSubmit} className="mb-6 p-4 bg-gray-50 rounded-2xl">
               <h3 className="text-sm font-semibold text-[#1D1D1F] mb-3">添加新通知</h3>
@@ -207,59 +233,20 @@ export default function NotificationModal({ isOpen, onClose, categories }: Notif
                 />
               </div>
 
-              {/* Notification Type */}
+              {/* Bark Key */}
               <div className="mb-3">
-                <label className="block text-xs text-gray-500 mb-2">通知方式</label>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="notifyType"
-                      checked={notifyType === 'bark'}
-                      onChange={() => setNotifyType('bark')}
-                      className="text-[#0071E3]"
-                    />
-                    <span className="text-sm">Bark APP</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="notifyType"
-                      checked={notifyType === 'email'}
-                      onChange={() => setNotifyType('email')}
-                      className="text-[#0071E3]"
-                    />
-                    <span className="text-sm">邮箱</span>
-                  </label>
-                </div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Bark 推送 Key <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={barkKey}
+                  onChange={e => setBarkKey(e.target.value)}
+                  placeholder="输入 Bark 推送 Key"
+                  className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+                  required
+                />
               </div>
-
-              {/* Bark Key / Email */}
-              {notifyType === 'bark' ? (
-                <div className="mb-3">
-                  <label className="block text-xs text-gray-500 mb-1">Bark Key</label>
-                  <input
-                    type="text"
-                    value={barkKey}
-                    onChange={e => setBarkKey(e.target.value)}
-                    placeholder="输入 Bark 推送 Key"
-                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
-                    required={notifyType === 'bark'}
-                  />
-                </div>
-              ) : (
-                <div className="mb-3">
-                  <label className="block text-xs text-gray-500 mb-1">邮箱地址</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    placeholder="your@email.com"
-                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
-                    required={notifyType === 'email'}
-                  />
-                </div>
-              )}
 
               <button
                 type="submit"
