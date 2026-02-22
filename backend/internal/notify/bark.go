@@ -106,6 +106,96 @@ func (b *BarkService) SendNewArrivalNotification(key, productName string, price 
 	return b.SendNotification(key, title, content)
 }
 
+// SendNewArrivalNotificationEnhanced sends an enhanced notification with product specs
+func (b *BarkService) SendNewArrivalNotificationEnhanced(
+	key, productName, category string,
+	price, discount float64,
+	imageURL, productURL, specs string,
+) error {
+	title := "🆕 苹果翻新新品上架"
+
+	// Build content with product details
+	var content strings.Builder
+	content.WriteString(fmt.Sprintf("[%s] %s\n", category, productName))
+	content.WriteString(fmt.Sprintf("¥%.0f", price))
+
+	if discount > 0 {
+		content.WriteString(fmt.Sprintf(" (省%.0f%%)", discount))
+	}
+
+	// Add parsed specs if available
+	if specs != "" && specs != "null" {
+		content.WriteString("\n")
+		// Parse and add key specs
+		if containsIgnoreCase(specs, "M1") || containsIgnoreCase(specs, "M2") || containsIgnoreCase(specs, "M3") {
+			// Extract chip info
+			if strings.Contains(specs, "chip") {
+				content.WriteString(extractSpec(specs, "chip"))
+			}
+		}
+	}
+
+	if productURL != "" {
+		content.WriteString(fmt.Sprintf("?url=%s", url.QueryEscape(productURL)))
+	}
+
+	// Add image as icon if available
+	if imageURL != "" {
+		content.WriteString(fmt.Sprintf("&icon=%s", url.QueryEscape(imageURL)))
+	}
+
+	// Add sound
+	content.WriteString("&sound=bell")
+
+	// Add group for threading
+	content.WriteString("&group=apple-price")
+
+	return b.SendNotification(key, title, content.String())
+}
+
+// extractSpec extracts a specific spec value from JSON string
+func extractSpec(specs, key string) string {
+	// Simple extraction - in production you'd use proper JSON parsing
+	lowerSpecs := toLower(specs)
+	lowerKey := toLower(key)
+
+	keyIdx := strings.Index(lowerSpecs, `"`+lowerKey+`"`)
+	if keyIdx == -1 {
+		return ""
+	}
+
+	// Find the colon after the key
+	colonIdx := strings.Index(specs[keyIdx:], ":")
+	if colonIdx == -1 {
+		return ""
+	}
+
+	valueStart := keyIdx + colonIdx + 1
+
+	// Skip whitespace
+	for valueStart < len(specs) && (specs[valueStart] == ' ' || specs[valueStart] == '\t' || specs[valueStart] == '\n') {
+		valueStart++
+	}
+
+	// If starts with quote, extract quoted string
+	if valueStart < len(specs) && specs[valueStart] == '"' {
+		valueStart++
+		valueEnd := strings.Index(specs[valueStart:], `"`)
+		if valueEnd == -1 {
+			return ""
+		}
+		return specs[valueStart : valueStart+valueEnd]
+	}
+
+	// Otherwise extract until comma or closing brace
+	valueEnd := strings.IndexAny(specs[valueStart:], ",}")
+	if valueEnd == -1 {
+		return specs[valueStart:]
+	}
+
+	return specs[valueStart : valueStart+valueEnd]
+}
+
 // SendBatchNotification sends a batch notification for multiple products
 func (b *BarkService) SendBatchNotification(key string, changes []PriceChange) error {
 	if len(changes) == 0 {

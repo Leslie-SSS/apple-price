@@ -191,24 +191,18 @@ func (d *DetailScraper) processWithRetry(product *model.Product, workerID int) {
 		// Fetch details
 		updatedProduct = d.scraper.ScrapeProductDetails(product)
 
-		// Check if we got a description
+		// Save if we got a description
 		if updatedProduct.Description != "" {
-			// Save to store
 			d.store.UpsertProduct(updatedProduct)
 			d.store.Save()
-
 			d.stats.TotalSuccess++
-			d.stats.TotalProcessed++
-
 			log.Printf("[DetailScraper] Worker %d: ✓ %s - %d chars",
 				workerID, product.ID, len(updatedProduct.Description))
+			d.stats.TotalProcessed++
 			return
 		}
 
-		// Failed to get description, save last error
-		if updatedProduct.Description == "" {
-			lastErr = fmt.Errorf("no description extracted")
-		}
+		lastErr = fmt.Errorf("no description extracted")
 	}
 
 	// All retries exhausted

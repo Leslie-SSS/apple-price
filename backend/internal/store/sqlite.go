@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,14 +104,57 @@ func (s *SQLiteStore) migrate() error {
 	CREATE TABLE IF NOT EXISTS new_arrival_subscriptions (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
+		description TEXT,
 		categories TEXT,
+		models TEXT,
+		chips TEXT,
+		storages TEXT,
+		memories TEXT,
+		stock_statuses TEXT,
 		max_price REAL DEFAULT 0,
 		min_price REAL DEFAULT 0,
 		keywords TEXT,
 		bark_key TEXT,
-		email TEXT,
+		notified_product_ids TEXT DEFAULT '[]',
 		enabled INTEGER DEFAULT 1,
-		created_at INTEGER NOT NULL
+		paused INTEGER DEFAULT 0,
+		notification_count INTEGER DEFAULT 0,
+		last_notified_at INTEGER,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER
+	);
+
+	CREATE TABLE IF NOT EXISTS notification_history (
+		id TEXT PRIMARY KEY,
+		subscription_id TEXT NOT NULL,
+		product_id TEXT NOT NULL,
+		product_name TEXT NOT NULL,
+		product_category TEXT NOT NULL,
+		product_price REAL NOT NULL,
+		product_image_url TEXT,
+		product_specs TEXT,
+		notification_type TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'sent',
+		error_message TEXT,
+		bark_key TEXT NOT NULL DEFAULT '',
+		bark_key_masked TEXT,
+		created_at INTEGER NOT NULL,
+		read_at INTEGER
+	);
+
+	CREATE TABLE IF NOT EXISTS scraper_status (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		last_scrape_time INTEGER,
+		last_scrape_status TEXT DEFAULT 'never',
+		last_scrape_error TEXT,
+		products_scraped INTEGER DEFAULT 0,
+		duration_ms INTEGER DEFAULT 0,
+		updated_at INTEGER
+	);
+
+	CREATE TABLE IF NOT EXISTS config (
+		key TEXT PRIMARY KEY,
+		value TEXT
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
@@ -122,6 +166,7 @@ func (s *SQLiteStore) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_price_history_product_recorded ON price_history(product_id, recorded_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_subscriptions_product_id ON subscriptions(product_id);
 	CREATE INDEX IF NOT EXISTS idx_new_arrival_subscriptions_enabled ON new_arrival_subscriptions(enabled);
+	CREATE INDEX IF NOT EXISTS idx_notification_history_subscription ON notification_history(subscription_id, created_at DESC);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -143,6 +188,18 @@ func (s *SQLiteStore) migrate() error {
 
 	// Add notified_product_ids column to new_arrival_subscriptions
 	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN notified_product_ids TEXT DEFAULT '[]'`)
+
+	// Add new columns to new_arrival_subscriptions for enhanced filtering
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN description TEXT`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN chips TEXT`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN storages TEXT`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN memories TEXT`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN stock_statuses TEXT`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN models TEXT`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN paused INTEGER DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN notification_count INTEGER DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN last_notified_at INTEGER`)
+	s.db.Exec(`ALTER TABLE new_arrival_subscriptions ADD COLUMN updated_at INTEGER`)
 
 	// Remove email column from new_arrival_subscriptions if it exists (migration)
 	s.db.Exec(`ALTER TABLE new_arrival_subscriptions DROP COLUMN email`)
@@ -399,10 +456,11 @@ func (s *SQLiteStore) UpsertProduct(product *model.Product) (priceChanged bool, 
 		// Error
 		return false, 0
 	} else {
-		// Existing product
+		// Existing product - always set oldPrice to distinguish from new products
+		oldPrice = existingPrice.Float64
+
 		if existingPrice.Float64 != product.Price {
 			priceChanged = true
-			oldPrice = existingPrice.Float64
 
 			// Add to history
 			_, _ = s.db.Exec(`
@@ -683,6 +741,41 @@ func (s *SQLiteStore) GetStats() *model.Stats {
 	// Total subscriptions
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM subscriptions").Scan(&stats.TotalSubscriptions)
 
+	// Scraper status
+	scraperStatus := &model.ScraperStatus{}
+	var lastTime sql.NullInt64
+	var scrapeErr sql.NullString
+	var productsScraped sql.NullInt64
+	var duration sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT last_scrape_time, last_scrape_status, last_scrape_error,
+			   products_scraped, duration_ms
+		FROM scraper_status WHERE id = 1
+	`).Scan(&lastTime, &scraperStatus.LastScrapeStatus, &scrapeErr,
+		&productsScraped, &duration)
+
+	if err == nil {
+		if lastTime.Valid {
+			scraperStatus.LastScrapeTime = time.Unix(lastTime.Int64, 0)
+		}
+		if scrapeErr.Valid {
+			scraperStatus.LastScrapeError = scrapeErr.String
+		}
+		if productsScraped.Valid {
+			scraperStatus.ProductsScraped = int(productsScraped.Int64)
+		}
+		if duration.Valid {
+			scraperStatus.Duration = duration.Int64
+		}
+		stats.ScraperStatus = scraperStatus
+	} else {
+		// No status record yet
+		stats.ScraperStatus = &model.ScraperStatus{
+			LastScrapeStatus: "never",
+		}
+	}
+
 	return stats
 }
 
@@ -851,32 +944,51 @@ func (s *SQLiteStore) AddNewArrivalSubscription(sub *model.NewArrivalSubscriptio
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	categoriesJSON := "[]"
-	if len(sub.Categories) > 0 {
-		// Simple JSON array encoding
-		categoriesJSON = "[\"" + strings.Join(sub.Categories, "\",\"") + "\"]"
+	// Debug: Check what we're receiving
+	fmt.Fprintf(os.Stderr, "[DEBUG] Categories=%v, len=%d\n", sub.Categories, len(sub.Categories))
+	for i, cat := range sub.Categories {
+		fmt.Fprintf(os.Stderr, "[DEBUG]   Categories[%d] = %q (len=%d)\n", i, cat, len(cat))
 	}
 
-	keywordsJSON := "[]"
-	if len(sub.Keywords) > 0 {
-		keywordsJSON = "[\"" + strings.Join(sub.Keywords, "\",\"") + "\"]"
-	}
+	// Use json.Marshal for proper JSON encoding
+	categoriesJSON, _ := json.Marshal(sub.Categories)
+	modelsJSON, _ := json.Marshal(sub.Models)
+	chipsJSON, _ := json.Marshal(sub.Chips)
+	storagesJSON, _ := json.Marshal(sub.Storages)
+	memoriesJSON, _ := json.Marshal(sub.Memories)
+	stockStatusesJSON, _ := json.Marshal(sub.StockStatuses)
+	keywordsJSON, _ := json.Marshal(sub.Keywords)
+
+	// Debug: Check what JSON marshal produces
+	fmt.Fprintf(os.Stderr, "[DEBUG] json.Marshal result: %q (len=%d)\n", string(categoriesJSON), len(categoriesJSON))
 
 	enabled := 1
 	if !sub.Enabled {
 		enabled = 0
 	}
 
-	// notified_product_ids defaults to empty JSON array
+	paused := 0
+	if sub.Paused {
+		paused = 1
+	}
+
+	var updatedAt int64
+	if !sub.UpdatedAt.IsZero() {
+		updatedAt = sub.UpdatedAt.Unix()
+	}
+
 	notifiedIDs := sub.NotifiedProductIDs
 	if notifiedIDs == "" {
 		notifiedIDs = "[]"
 	}
 
 	_, err := s.db.Exec(`
-		INSERT INTO new_arrival_subscriptions (id, name, categories, max_price, min_price, keywords, bark_key, enabled, created_at, notified_product_ids)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sub.ID, sub.Name, categoriesJSON, sub.MaxPrice, sub.MinPrice, keywordsJSON, sub.BarkKey, enabled, sub.CreatedAt.Unix(), notifiedIDs)
+		INSERT INTO new_arrival_subscriptions (id, name, description, categories, models, chips, storages, memories,
+			stock_statuses, max_price, min_price, keywords, bark_key, enabled, paused, created_at, updated_at, notified_product_ids)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, sub.ID, sub.Name, sub.Description, string(categoriesJSON), string(modelsJSON), string(chipsJSON), string(storagesJSON), string(memoriesJSON),
+		string(stockStatusesJSON), sub.MaxPrice, sub.MinPrice, string(keywordsJSON), sub.BarkKey, enabled, paused,
+		sub.CreatedAt.Unix(), updatedAt, notifiedIDs)
 
 	return err
 }
@@ -896,7 +1008,9 @@ func (s *SQLiteStore) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscri
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, name, categories, max_price, min_price, keywords, bark_key, enabled, created_at, notified_product_ids
+		SELECT id, name, description, categories, models, chips, storages, memories, stock_statuses,
+		       max_price, min_price, keywords, bark_key, enabled, paused, notification_count,
+		       last_notified_at, created_at, updated_at, notified_product_ids
 		FROM new_arrival_subscriptions
 		ORDER BY created_at DESC
 	`)
@@ -909,31 +1023,60 @@ func (s *SQLiteStore) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscri
 	for rows.Next() {
 		sub := &model.NewArrivalSubscription{}
 		var created int64
-		var categoriesStr, keywordsStr, notifiedIDsStr sql.NullString
+		var description, categoriesStr, modelsStr, chipsStr, storagesStr, memoriesStr, stockStatusesStr sql.NullString
+		var keywordsStr, notifiedIDsStr sql.NullString
 		var barkKey sql.NullString
-		var enabled int
+		var enabled, paused int
+		var notificationCount int
 		var maxPrice, minPrice sql.NullFloat64
+		var lastNotifiedAt, updatedAt sql.NullInt64
 
-		err := rows.Scan(&sub.ID, &sub.Name, &categoriesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &enabled, &created, &notifiedIDsStr)
+		err := rows.Scan(&sub.ID, &sub.Name, &description, &categoriesStr, &modelsStr, &chipsStr, &storagesStr, &memoriesStr,
+			&stockStatusesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &enabled, &paused,
+			&notificationCount, &lastNotifiedAt, &created, &updatedAt, &notifiedIDsStr)
 		if err != nil {
 			continue
 		}
 
-		// Parse categories JSON
-		if categoriesStr.Valid && categoriesStr.String != "[]" {
-			// Remove ["] and split by ","
-			cats := strings.Trim(categoriesStr.String, "[]")
-			if cats != "" {
-				sub.Categories = strings.Split(cats, "\",\"")
-			}
+		sub.Description = description.String
+
+		// Parse categories JSON using encoding/json
+		// Need to unmarshal regardless of content - empty arrays are valid
+		if categoriesStr.Valid && categoriesStr.String != "" {
+			fmt.Fprintf(os.Stderr, "[DEBUG] categoriesStr.String = %q (len=%d)\n", categoriesStr.String, len(categoriesStr.String))
+			fmt.Fprintf(os.Stderr, "[DEBUG] categoriesStr bytes = %v\n", []byte(categoriesStr.String))
+			json.Unmarshal([]byte(categoriesStr.String), &sub.Categories)
+			fmt.Fprintf(os.Stderr, "[DEBUG] After unmarshal, sub.Categories = %v\n", sub.Categories)
 		}
 
-		// Parse keywords JSON
-		if keywordsStr.Valid && keywordsStr.String != "[]" {
-			kw := strings.Trim(keywordsStr.String, "[]")
-			if kw != "" {
-				sub.Keywords = strings.Split(kw, "\",\"")
-			}
+		// Parse models JSON using encoding/json
+		if modelsStr.Valid && modelsStr.String != "" {
+			json.Unmarshal([]byte(modelsStr.String), &sub.Models)
+		}
+
+		// Parse chips JSON using encoding/json
+		if chipsStr.Valid && chipsStr.String != "" {
+			json.Unmarshal([]byte(chipsStr.String), &sub.Chips)
+		}
+
+		// Parse storages JSON using encoding/json
+		if storagesStr.Valid && storagesStr.String != "" {
+			json.Unmarshal([]byte(storagesStr.String), &sub.Storages)
+		}
+
+		// Parse memories JSON using encoding/json
+		if memoriesStr.Valid && memoriesStr.String != "" {
+			json.Unmarshal([]byte(memoriesStr.String), &sub.Memories)
+		}
+
+		// Parse stock_statuses JSON using encoding/json
+		if stockStatusesStr.Valid && stockStatusesStr.String != "" {
+			json.Unmarshal([]byte(stockStatusesStr.String), &sub.StockStatuses)
+		}
+
+		// Parse keywords JSON using encoding/json
+		if keywordsStr.Valid && keywordsStr.String != "" {
+			json.Unmarshal([]byte(keywordsStr.String), &sub.Keywords)
 		}
 
 		if barkKey.Valid {
@@ -945,12 +1088,113 @@ func (s *SQLiteStore) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscri
 			sub.NotifiedProductIDs = "[]"
 		}
 		sub.Enabled = enabled == 1
+		sub.Paused = paused == 1
 		if maxPrice.Valid {
 			sub.MaxPrice = maxPrice.Float64
 		}
 		if minPrice.Valid {
 			sub.MinPrice = minPrice.Float64
 		}
+		sub.NotificationCount = notificationCount
+
+		sub.CreatedAt = time.Unix(created, 0)
+		subs = append(subs, sub)
+	}
+
+	return subs
+}
+
+// GetNewArrivalSubscriptionsByBarkKey returns subscriptions for a specific Bark Key
+func (s *SQLiteStore) GetNewArrivalSubscriptionsByBarkKey(barkKey string) []*model.NewArrivalSubscription {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT id, name, description, categories, models, chips, storages, memories, stock_statuses,
+		       max_price, min_price, keywords, bark_key, enabled, paused, notification_count,
+		       last_notified_at, created_at, updated_at, notified_product_ids
+		FROM new_arrival_subscriptions
+		WHERE bark_key = ?
+		ORDER BY created_at DESC
+	`, barkKey)
+	if err != nil {
+		return []*model.NewArrivalSubscription{}
+	}
+	defer rows.Close()
+
+	var subs []*model.NewArrivalSubscription
+	for rows.Next() {
+		sub := &model.NewArrivalSubscription{}
+		var created int64
+		var description, categoriesStr, modelsStr, chipsStr, storagesStr, memoriesStr, stockStatusesStr sql.NullString
+		var keywordsStr, notifiedIDsStr sql.NullString
+		var barkKeyVal sql.NullString
+		var enabled, paused int
+		var notificationCount int
+		var maxPrice, minPrice sql.NullFloat64
+		var lastNotifiedAt, updatedAt sql.NullInt64
+
+		err := rows.Scan(&sub.ID, &sub.Name, &description, &categoriesStr, &modelsStr, &chipsStr, &storagesStr, &memoriesStr,
+			&stockStatusesStr, &maxPrice, &minPrice, &keywordsStr, &barkKeyVal, &enabled, &paused,
+			&notificationCount, &lastNotifiedAt, &created, &updatedAt, &notifiedIDsStr)
+		if err != nil {
+			continue
+		}
+
+		sub.Description = description.String
+
+		// Parse categories JSON
+		if categoriesStr.Valid && categoriesStr.String != "" {
+			json.Unmarshal([]byte(categoriesStr.String), &sub.Categories)
+		}
+
+		// Parse models JSON
+		if modelsStr.Valid && modelsStr.String != "" {
+			json.Unmarshal([]byte(modelsStr.String), &sub.Models)
+		}
+
+		// Parse chips JSON
+		if chipsStr.Valid && chipsStr.String != "" {
+			json.Unmarshal([]byte(chipsStr.String), &sub.Chips)
+		}
+
+		// Parse storages JSON
+		if storagesStr.Valid && storagesStr.String != "" {
+			json.Unmarshal([]byte(storagesStr.String), &sub.Storages)
+		}
+
+		// Parse memories JSON
+		if memoriesStr.Valid && memoriesStr.String != "" {
+			json.Unmarshal([]byte(memoriesStr.String), &sub.Memories)
+		}
+
+		// Parse stock_statuses JSON
+		if stockStatusesStr.Valid && stockStatusesStr.String != "" {
+			json.Unmarshal([]byte(stockStatusesStr.String), &sub.StockStatuses)
+		}
+
+		// Parse keywords JSON
+		if keywordsStr.Valid && keywordsStr.String != "" {
+			json.Unmarshal([]byte(keywordsStr.String), &sub.Keywords)
+		}
+
+		if barkKeyVal.Valid {
+			sub.BarkKey = barkKeyVal.String
+		}
+		if notifiedIDsStr.Valid {
+			sub.NotifiedProductIDs = notifiedIDsStr.String
+		} else {
+			sub.NotifiedProductIDs = "[]"
+		}
+		sub.Enabled = enabled == 1
+		sub.Paused = paused == 1
+		if maxPrice.Valid {
+			sub.MaxPrice = maxPrice.Float64
+		}
+		if minPrice.Valid {
+			sub.MinPrice = minPrice.Float64
+		}
+		sub.NotificationCount = notificationCount
 
 		sub.CreatedAt = time.Unix(created, 0)
 		subs = append(subs, sub)
@@ -966,15 +1210,22 @@ func (s *SQLiteStore) GetNewArrivalSubscription(id string) (*model.NewArrivalSub
 
 	sub := &model.NewArrivalSubscription{}
 	var created int64
-	var categoriesStr, keywordsStr, notifiedIDsStr sql.NullString
+	var description, categoriesStr, modelsStr, chipsStr, storagesStr, memoriesStr, stockStatusesStr sql.NullString
+	var keywordsStr, notifiedIDsStr sql.NullString
 	var barkKey sql.NullString
-	var enabled int
+	var enabled, paused int
+	var notificationCount int
 	var maxPrice, minPrice sql.NullFloat64
+	var lastNotifiedAt, updatedAt sql.NullInt64
 
 	err := s.db.QueryRow(`
-		SELECT id, name, categories, max_price, min_price, keywords, bark_key, enabled, created_at, notified_product_ids
+		SELECT id, name, description, categories, models, chips, storages, memories, stock_statuses,
+		       max_price, min_price, keywords, bark_key, enabled, paused, notification_count,
+		       last_notified_at, created_at, updated_at, notified_product_ids
 		FROM new_arrival_subscriptions WHERE id = ?
-	`, id).Scan(&sub.ID, &sub.Name, &categoriesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &enabled, &created, &notifiedIDsStr)
+	`, id).Scan(&sub.ID, &sub.Name, &description, &categoriesStr, &modelsStr, &chipsStr, &storagesStr, &memoriesStr,
+		&stockStatusesStr, &maxPrice, &minPrice, &keywordsStr, &barkKey, &enabled, &paused,
+		&notificationCount, &lastNotifiedAt, &created, &updatedAt, &notifiedIDsStr)
 
 	if err == sql.ErrNoRows {
 		return nil, false
@@ -983,20 +1234,41 @@ func (s *SQLiteStore) GetNewArrivalSubscription(id string) (*model.NewArrivalSub
 		return nil, false
 	}
 
-	// Parse categories JSON
-	if categoriesStr.Valid && categoriesStr.String != "[]" {
-		cats := strings.Trim(categoriesStr.String, "[]")
-		if cats != "" {
-			sub.Categories = strings.Split(cats, "\",\"")
-		}
+	sub.Description = description.String
+
+	// Parse categories JSON using encoding/json
+	if categoriesStr.Valid && categoriesStr.String != "" && categoriesStr.String != "[]" {
+		json.Unmarshal([]byte(categoriesStr.String), &sub.Categories)
 	}
 
-	// Parse keywords JSON
-	if keywordsStr.Valid && keywordsStr.String != "[]" {
-		kw := strings.Trim(keywordsStr.String, "[]")
-		if kw != "" {
-			sub.Keywords = strings.Split(kw, "\",\"")
-		}
+	// Parse models JSON using encoding/json
+	if modelsStr.Valid && modelsStr.String != "" && modelsStr.String != "[]" {
+		json.Unmarshal([]byte(modelsStr.String), &sub.Models)
+	}
+
+	// Parse chips JSON using encoding/json
+	if chipsStr.Valid && chipsStr.String != "" && chipsStr.String != "[]" {
+		json.Unmarshal([]byte(chipsStr.String), &sub.Chips)
+	}
+
+	// Parse storages JSON using encoding/json
+	if storagesStr.Valid && storagesStr.String != "" && storagesStr.String != "[]" {
+		json.Unmarshal([]byte(storagesStr.String), &sub.Storages)
+	}
+
+	// Parse memories JSON using encoding/json
+	if memoriesStr.Valid && memoriesStr.String != "" && memoriesStr.String != "[]" {
+		json.Unmarshal([]byte(memoriesStr.String), &sub.Memories)
+	}
+
+	// Parse stock_statuses JSON using encoding/json
+	if stockStatusesStr.Valid && stockStatusesStr.String != "" && stockStatusesStr.String != "[]" {
+		json.Unmarshal([]byte(stockStatusesStr.String), &sub.StockStatuses)
+	}
+
+	// Parse keywords JSON using encoding/json
+	if keywordsStr.Valid && keywordsStr.String != "" && keywordsStr.String != "[]" {
+		json.Unmarshal([]byte(keywordsStr.String), &sub.Keywords)
 	}
 
 	if barkKey.Valid {
@@ -1008,14 +1280,21 @@ func (s *SQLiteStore) GetNewArrivalSubscription(id string) (*model.NewArrivalSub
 		sub.NotifiedProductIDs = "[]"
 	}
 	sub.Enabled = enabled == 1
+	sub.Paused = paused == 1
+	sub.NotificationCount = notificationCount
 	if maxPrice.Valid {
 		sub.MaxPrice = maxPrice.Float64
 	}
 	if minPrice.Valid {
 		sub.MinPrice = minPrice.Float64
 	}
-
+	if lastNotifiedAt.Valid {
+		sub.LastNotifiedAt = time.Unix(lastNotifiedAt.Int64, 0)
+	}
 	sub.CreatedAt = time.Unix(created, 0)
+	if updatedAt.Valid {
+		sub.UpdatedAt = time.Unix(updatedAt.Int64, 0)
+	}
 
 	return sub, true
 }
@@ -1068,5 +1347,239 @@ func (s *SQLiteStore) UpdateNotifiedProductIDs(subscriptionID, productID string)
 
 	// Update database
 	_, err = s.db.Exec("UPDATE new_arrival_subscriptions SET notified_product_ids = ? WHERE id = ?", newIDs, subscriptionID)
+	return err
+}
+
+// AddNotificationHistory adds a notification history record
+func (s *SQLiteStore) AddNotificationHistory(history *model.NotificationHistory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		INSERT INTO notification_history (id, subscription_id, product_id, product_name, product_category,
+			product_price, product_image_url, product_specs, notification_type, status, error_message,
+			bark_key, bark_key_masked, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, history.ID, history.SubscriptionID, history.ProductID, history.ProductName,
+		history.ProductCategory, history.ProductPrice, history.ProductImageURL, history.ProductSpecs,
+		history.NotificationType, history.Status, history.ErrorMessage, history.BarkKey, history.BarkKeyMasked,
+		history.CreatedAt.Unix())
+
+	return err
+}
+
+// GetNotificationHistory retrieves notification history with optional filters
+func (s *SQLiteStore) GetNotificationHistory(subscriptionID string, barkKey string, limit, offset int) ([]*model.NotificationHistory, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Build query with filters - always filter by bark_key for user isolation
+	query := `SELECT id, subscription_id, product_id, product_name, product_category, product_price,
+		product_image_url, product_specs, notification_type, status, error_message, bark_key, bark_key_masked,
+		created_at, read_at FROM notification_history WHERE bark_key = ?`
+	args := []interface{}{barkKey}
+
+	if subscriptionID != "" {
+		query += " AND subscription_id = ?"
+		args = append(args, subscriptionID)
+	}
+
+	// Get total count
+	countQuery := "SELECT COUNT(*) FROM notification_history WHERE bark_key = ?"
+	countArgs := []interface{}{barkKey}
+	if subscriptionID != "" {
+		countQuery += " AND subscription_id = ?"
+		countArgs = append(countArgs, subscriptionID)
+	}
+	var total int
+	_ = s.db.QueryRow(countQuery, countArgs...).Scan(&total)
+
+	// Add order and pagination
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return []*model.NotificationHistory{}, 0
+	}
+	defer rows.Close()
+
+	var history []*model.NotificationHistory
+	for rows.Next() {
+		h := &model.NotificationHistory{}
+		var created int64
+		var readAt sql.NullInt64
+		var barkKeyFull sql.NullString
+
+		err := rows.Scan(&h.ID, &h.SubscriptionID, &h.ProductID, &h.ProductName, &h.ProductCategory,
+			&h.ProductPrice, &h.ProductImageURL, &h.ProductSpecs, &h.NotificationType, &h.Status,
+			&h.ErrorMessage, &barkKeyFull, &h.BarkKeyMasked, &created, &readAt)
+		if err != nil {
+			continue
+		}
+
+		h.CreatedAt = time.Unix(created, 0)
+		if readAt.Valid {
+			readTime := time.Unix(readAt.Int64, 0)
+			h.ReadAt = &readTime
+		}
+
+		history = append(history, h)
+	}
+
+	return history, total
+}
+
+// MarkNotificationAsRead marks a notification as read
+func (s *SQLiteStore) MarkNotificationAsRead(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("UPDATE notification_history SET read_at = ? WHERE id = ?", time.Now().Unix(), id)
+	return err
+}
+
+// GetUnreadNotificationCount returns the count of unread notifications
+func (s *SQLiteStore) GetUnreadNotificationCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM notification_history WHERE read_at IS NULL").Scan(&count)
+	return count
+}
+
+// UpdateNewArrivalSubscription updates an existing subscription
+func (s *SQLiteStore) UpdateNewArrivalSubscription(sub *model.NewArrivalSubscription) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Use json.Marshal for proper JSON encoding
+	categoriesJSON, _ := json.Marshal(sub.Categories)
+	modelsJSON, _ := json.Marshal(sub.Models)
+	chipsJSON, _ := json.Marshal(sub.Chips)
+	storagesJSON, _ := json.Marshal(sub.Storages)
+	memoriesJSON, _ := json.Marshal(sub.Memories)
+	stockStatusesJSON, _ := json.Marshal(sub.StockStatuses)
+	keywordsJSON, _ := json.Marshal(sub.Keywords)
+
+	paused := 0
+	if sub.Paused {
+		paused = 1
+	}
+
+	enabled := 1
+	if !sub.Enabled {
+		enabled = 0
+	}
+
+	var updatedAt int64
+	if !sub.UpdatedAt.IsZero() {
+		updatedAt = sub.UpdatedAt.Unix()
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE new_arrival_subscriptions
+		SET name = ?, description = ?, categories = ?, models = ?, chips = ?, storages = ?,
+		    memories = ?, stock_statuses = ?, min_price = ?, max_price = ?,
+		    keywords = ?, bark_key = ?, enabled = ?, paused = ?, updated_at = ?
+		WHERE id = ?
+	`, sub.Name, sub.Description, string(categoriesJSON), string(modelsJSON), string(chipsJSON), string(storagesJSON),
+		string(memoriesJSON), string(stockStatusesJSON), sub.MinPrice, sub.MaxPrice,
+		string(keywordsJSON), sub.BarkKey, enabled, paused, updatedAt, sub.ID)
+
+	return err
+}
+
+// PauseSubscription pauses a subscription
+func (s *SQLiteStore) PauseSubscription(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("UPDATE new_arrival_subscriptions SET paused = 1 WHERE id = ?", id)
+	return err
+}
+
+// ResumeSubscription resumes a paused subscription
+func (s *SQLiteStore) ResumeSubscription(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("UPDATE new_arrival_subscriptions SET paused = 0 WHERE id = ?", id)
+	return err
+}
+
+// IncrementNotificationCount increments the notification count for a subscription
+func (s *SQLiteStore) IncrementNotificationCount(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		UPDATE new_arrival_subscriptions
+		SET notification_count = notification_count + 1, last_notified_at = ?
+		WHERE id = ?
+	`, time.Now().Unix(), id)
+
+	return err
+}
+
+// GetScraperStatus returns the current scraper status
+func (s *SQLiteStore) GetScraperStatus() *model.ScraperStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	status := &model.ScraperStatus{}
+	var lastTime, updatedAt sql.NullInt64
+	var scrapeErr sql.NullString
+	var productsScraped sql.NullInt64
+	var duration sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT last_scrape_time, last_scrape_status, last_scrape_error,
+			   products_scraped, duration_ms, updated_at
+		FROM scraper_status WHERE id = 1
+	`).Scan(&lastTime, &status.LastScrapeStatus, &scrapeErr,
+		&productsScraped, &duration, &updatedAt)
+
+	if err == sql.ErrNoRows {
+		status.LastScrapeStatus = "never"
+		return status
+	}
+
+	if lastTime.Valid {
+		status.LastScrapeTime = time.Unix(lastTime.Int64, 0)
+	}
+	if scrapeErr.Valid {
+		status.LastScrapeError = scrapeErr.String
+	}
+	if productsScraped.Valid {
+		status.ProductsScraped = int(productsScraped.Int64)
+	}
+	if duration.Valid {
+		status.Duration = duration.Int64
+	}
+
+	return status
+}
+
+// UpdateScraperStatus updates the scraper status
+func (s *SQLiteStore) UpdateScraperStatus(status *model.ScraperStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var lastTime interface{}
+	if !status.LastScrapeTime.IsZero() {
+		lastTime = status.LastScrapeTime.Unix()
+	} else {
+		lastTime = nil
+	}
+
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO scraper_status
+		(id, last_scrape_time, last_scrape_status, last_scrape_error, products_scraped, duration_ms, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?)
+	`, lastTime, status.LastScrapeStatus, status.LastScrapeError,
+		status.ProductsScraped, status.Duration, time.Now().Unix())
+
 	return err
 }

@@ -32,8 +32,19 @@ type StoreInterface interface {
 	AddNewArrivalSubscription(sub *model.NewArrivalSubscription) error
 	RemoveNewArrivalSubscription(id string) error
 	GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscription
+	GetNewArrivalSubscriptionsByBarkKey(barkKey string) []*model.NewArrivalSubscription
 	GetNewArrivalSubscription(id string) (*model.NewArrivalSubscription, bool)
 	UpdateNotifiedProductIDs(subscriptionID, productID string) error
+	UpdateNewArrivalSubscription(sub *model.NewArrivalSubscription) error
+	PauseSubscription(id string) error
+	ResumeSubscription(id string) error
+	IncrementNotificationCount(id string) error
+
+	// Notification history operations
+	AddNotificationHistory(history *model.NotificationHistory) error
+	GetNotificationHistory(subscriptionID string, barkKey string, limit, offset int) ([]*model.NotificationHistory, int)
+	MarkNotificationAsRead(id string) error
+	GetUnreadNotificationCount() int
 
 	// Statistics operations
 	GetStats() *model.Stats
@@ -44,6 +55,10 @@ type StoreInterface interface {
 	// Scraping metadata operations
 	UpdateLastScrapeTime(t time.Time)
 	GetLastScrapeTime() time.Time
+
+	// Scraper status operations
+	GetScraperStatus() *model.ScraperStatus
+	UpdateScraperStatus(status *model.ScraperStatus) error
 
 	// Persistence
 	Save() error

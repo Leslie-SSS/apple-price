@@ -362,7 +362,10 @@ func (s *AppleScraper) ScrapeProductDetails(product *model.Product) *model.Produ
 	specsDetailBytes, _ := json.Marshal(mergedSpecs)
 
 	// Update product with fetched details
-	product.Description = description
+	// Preserve existing description if new extraction returns empty
+	if description != "" {
+		product.Description = description
+	}
 	product.SpecsDetail = string(specsDetailBytes)
 
 	return product

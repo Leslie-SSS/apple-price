@@ -30,9 +30,20 @@ func SetupRoutes(r *gin.Engine, store StoreInterface, dispatcher PriceChangeNoti
 		v1.DELETE("/new-arrival-subscriptions/:id", handlers.DeleteNewArrivalSubscription)
 		v1.GET("/new-arrival-subscriptions", handlers.GetNewArrivalSubscriptions)
 		v1.GET("/new-arrival-subscriptions/:id", handlers.GetNewArrivalSubscription)
+		v1.PUT("/new-arrival-subscriptions/:id", handlers.UpdateNewArrivalSubscription)
+		v1.PATCH("/new-arrival-subscriptions/:id/pause", handlers.PauseSubscription)
+		v1.PATCH("/new-arrival-subscriptions/:id/resume", handlers.ResumeSubscription)
+
+		// Notification History
+		v1.GET("/notification-history", handlers.GetNotificationHistory)
+		v1.POST("/notification-history/:id/read", handlers.MarkNotificationAsRead)
+		v1.GET("/notification-history/unread-count", handlers.GetUnreadNotificationCount)
 
 		// Categories
 		v1.GET("/categories", handlers.GetCategories)
+
+		// Filter Options
+		v1.GET("/filter-options", handlers.GetFilterOptions)
 
 		// Stats
 		v1.GET("/stats", handlers.GetStats)

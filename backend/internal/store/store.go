@@ -25,8 +25,10 @@ type Store struct {
 	subscriptions     map[string]*model.Subscription
 	subscriptionsByProduct map[string][]string // productID -> subscriptionIDs
 	newArrivalSubscriptions map[string]*model.NewArrivalSubscription
+	notificationHistory    []*model.NotificationHistory
 	dataDir           string
 	lastScrapeTime    time.Time
+	scraperStatus     *model.ScraperStatus
 }
 
 // New creates a new Store instance
@@ -38,6 +40,7 @@ func New(dataDir string) (*Store, error) {
 		subscriptions:            make(map[string]*model.Subscription),
 		subscriptionsByProduct:   make(map[string][]string),
 		newArrivalSubscriptions:  make(map[string]*model.NewArrivalSubscription),
+		notificationHistory:      make([]*model.NotificationHistory, 0),
 		dataDir:                  dataDir,
 	}
 
@@ -99,6 +102,16 @@ func (s *Store) Load() error {
 		}
 	}
 
+	// Load notification history
+	notifHistoryFile := filepath.Join(s.dataDir, "notification_history.json")
+	if data, err := os.ReadFile(notifHistoryFile); err == nil {
+		var notifHistory []*model.NotificationHistory
+		if err := json.Unmarshal(data, &notifHistory); err != nil {
+			return fmt.Errorf("failed to unmarshal notification history: %w", err)
+		}
+		s.notificationHistory = notifHistory
+	}
+
 	return nil
 }
 
@@ -136,6 +149,15 @@ func (s *Store) Save() error {
 	}
 	if err := os.WriteFile(filepath.Join(s.dataDir, "subscriptions.json"), subsData, 0644); err != nil {
 		return fmt.Errorf("failed to write subscriptions: %w", err)
+	}
+
+	// Save notification history
+	notifHistoryData, err := json.MarshalIndent(s.notificationHistory, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal notification history: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dataDir, "notification_history.json"), notifHistoryData, 0644); err != nil {
+		return fmt.Errorf("failed to write notification history: %w", err)
 	}
 
 	return nil
@@ -571,6 +593,24 @@ func (s *Store) GetAllNewArrivalSubscriptions() []*model.NewArrivalSubscription 
 	return subs
 }
 
+// GetNewArrivalSubscriptionsByBarkKey returns subscriptions for a specific Bark Key
+func (s *Store) GetNewArrivalSubscriptionsByBarkKey(barkKey string) []*model.NewArrivalSubscription {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.newArrivalSubscriptions == nil {
+		return nil
+	}
+
+	subs := make([]*model.NewArrivalSubscription, 0)
+	for _, sub := range s.newArrivalSubscriptions {
+		if sub.BarkKey == barkKey {
+			subs = append(subs, sub)
+		}
+	}
+	return subs
+}
+
 // GetNewArrivalSubscription returns a new arrival subscription by ID
 func (s *Store) GetNewArrivalSubscription(id string) (*model.NewArrivalSubscription, bool) {
 	s.mu.RLock()
@@ -637,5 +677,168 @@ func (s *Store) UpdateNotifiedProductIDs(subscriptionID, productID string) error
 		sub.NotifiedProductIDs = "[" + strings.Join(quotedIDs, ",") + "]"
 	}
 
+	return nil
+}
+
+// AddNotificationHistory adds a notification history record
+func (s *Store) AddNotificationHistory(history *model.NotificationHistory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.notificationHistory = append(s.notificationHistory, history)
+	return nil
+}
+
+// GetNotificationHistory returns notification history with pagination
+func (s *Store) GetNotificationHistory(subscriptionID string, barkKey string, limit, offset int) ([]*model.NotificationHistory, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Filter by bark_key first (user isolation), then by subscription ID if provided
+	var filtered []*model.NotificationHistory
+	for _, h := range s.notificationHistory {
+		if h.BarkKey == barkKey {
+			if subscriptionID == "" || h.SubscriptionID == subscriptionID {
+				filtered = append(filtered, h)
+			}
+		}
+	}
+
+	total := len(filtered)
+
+	// Apply pagination
+	if offset >= total {
+		return nil, total
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	return filtered[offset:end], total
+}
+
+// MarkNotificationAsRead marks a notification as read
+func (s *Store) MarkNotificationAsRead(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for _, h := range s.notificationHistory {
+		if h.ID == id {
+			h.ReadAt = &now
+			return nil
+		}
+	}
+
+	return fmt.Errorf("notification not found")
+}
+
+// GetUnreadNotificationCount returns the count of unread notifications
+func (s *Store) GetUnreadNotificationCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, h := range s.notificationHistory {
+		if h.ReadAt == nil {
+			count++
+		}
+	}
+	return count
+}
+
+// UpdateNewArrivalSubscription updates an existing subscription
+func (s *Store) UpdateNewArrivalSubscription(sub *model.NewArrivalSubscription) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.newArrivalSubscriptions == nil {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	if _, exists := s.newArrivalSubscriptions[sub.ID]; !exists {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	s.newArrivalSubscriptions[sub.ID] = sub
+	return nil
+}
+
+// PauseSubscription pauses a subscription
+func (s *Store) PauseSubscription(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.newArrivalSubscriptions == nil {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub, exists := s.newArrivalSubscriptions[id]
+	if !exists {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub.Paused = true
+	return nil
+}
+
+// ResumeSubscription resumes a paused subscription
+func (s *Store) ResumeSubscription(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.newArrivalSubscriptions == nil {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub, exists := s.newArrivalSubscriptions[id]
+	if !exists {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub.Paused = false
+	return nil
+}
+
+// IncrementNotificationCount increments the notification count for a subscription
+func (s *Store) IncrementNotificationCount(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.newArrivalSubscriptions == nil {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub, exists := s.newArrivalSubscriptions[id]
+	if !exists {
+		return fmt.Errorf("new arrival subscription not found")
+	}
+
+	sub.NotificationCount++
+	sub.LastNotifiedAt = time.Now()
+	return nil
+}
+
+// GetScraperStatus returns the current scraper status (in-memory for JSON store)
+func (s *Store) GetScraperStatus() *model.ScraperStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.scraperStatus == nil {
+		return &model.ScraperStatus{
+			LastScrapeStatus: "never",
+		}
+	}
+	return s.scraperStatus
+}
+
+// UpdateScraperStatus updates the scraper status (in-memory for JSON store)
+func (s *Store) UpdateScraperStatus(status *model.ScraperStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.scraperStatus = status
 	return nil
 }

@@ -1,181 +1,147 @@
 # ApplePrice - 苹果官方翻新产品价格监听工具
 
-监听苹果中国大陆和香港地区官方翻新产品，提供智能分析和价格追踪。
+<p align="center">
+  <img src="img0.png" alt="产品列表" width="45%" />
+  <img src="img1.png" alt="通知设置" width="45%" />
+</p>
+
+<p align="center">
+  <a href="#功能特性">功能特性</a> •
+  <a href="#快速开始">快速开始</a> •
+  <a href="#docker-部署">Docker 部署</a> •
+  <a href="#bark-推送通知配置">Bark 配置</a>
+</p>
+
+---
+
+实时监听苹果中国大陆和香港地区官方翻新产品，智能分析性价比，第一时间推送新品上架通知。
 
 ## 功能特性
 
-- 🔄 **自动爬取**: 每5分钟自动爬取 Apple CN/HK 翻新产品
-- 📊 **价格追踪**: 记录价格历史，展示价格变动趋势
-- 🔔 **价格通知**: 支持 Bark 推送通知（iOS）
-- 🔔 **上新通知**: 新品上架自动通知
-- 💾 **数据持久化**: SQLite 数据库存储
+- **自动爬取** - 每5分钟自动同步 Apple CN/HK 翻新产品价格
+- **智能推荐** - AI 分析产品配置，计算性价比评分
+- **价格追踪** - 记录价格历史，K线图展示价格走势
+- **上新通知** - 新品上架立即推送，支持按品类/价格/型号筛选
+- **价格提醒** - 降价、达到目标价自动通知
+- **多用户支持** - 每个用户独立配置，数据隔离保护隐私
+- **Bark 推送** - iOS 原生推送通知，秒级触达
 
 ## 技术栈
 
-- **后端**: Go (Gin框架)
-- **前端**: React + Vite + TailwindCSS
-- **存储**: SQLite 数据库
-- **通知**: Bark API
+| 前端 | 后端 | 存储 | 通知 |
+|:---:|:---:|:---:|:---:|
+| React + Vite | Go + Gin | SQLite | Bark API |
+| TailwindCSS | 定时任务 | 持久化 | iOS Push |
 
 ## 快速开始
 
-### 本地开发
-
-#### 后端
+### 后端
 
 ```bash
 cd backend
-
-# 安装依赖
 go mod download
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，设置必要的配置
-
-# 运行服务
 go run cmd/server/main.go
 ```
 
-#### 前端
+### 前端
 
 ```bash
 cd frontend
-
-# 安装依赖
 npm install
-
-# 运行开发服务器
 npm run dev
-
-# 构建生产版本
-npm run build
 ```
 
-### Docker 部署
+访问 http://localhost:5173 即可使用。
+
+## Docker 部署
 
 ```bash
-# 复制环境变量文件
-cp .env.example .env
-
-# 启动所有服务
+# 一键启动
 docker-compose up -d
 
 # 查看日志
 docker-compose logs -f
-
-# 停止服务
-docker-compose down
 ```
 
-## API 文档
+## Bark 推送通知配置
 
-### 产品接口
+本项目使用 [Bark](https://github.com/Finb/Bark) 作为 iOS 推送通知服务。
 
-- `GET /api/products` - 获取产品列表
-  - Query: `category`, `region`, `sort`, `order`, `stock_status`
-- `GET /api/products/:id` - 获取产品详情
-- `GET /api/products/:id/history` - 获取价格历史
+### 快速配置
 
-### 订阅接口
+1. **下载 Bark App** - App Store 搜索 "Bark"
+2. **获取推送 Key** - 打开 App，首页显示的字符串
+3. **配置订阅** - 网页端输入 Bark Key，创建订阅规则
 
-- `POST /api/subscriptions` - 创建价格订阅
-- `DELETE /api/subscriptions/:id` - 删除订阅
-- `GET /api/subscriptions` - 获取订阅列表
+### 支持的通知类型
 
-### 新品订阅接口
+| 通知类型 | 说明 |
+|:-------|:-----|
+| **新品上架** | 符合筛选条件的新产品上架时推送 |
+| **价格变动** | 订阅的产品价格变化时推送 |
+| **目标价提醒** | 产品价格降至目标价以下时推送 |
 
-- `POST /api/new-arrival-subscriptions` - 创建新品订阅
-- `DELETE /api/new-arrival-subscriptions/:id` - 删除新品订阅
-- `GET /api/new-arrival-subscriptions` - 获取新品订阅列表
+### 隐私保护
 
-### 其他接口
+- Bark Key 仅存储在本地浏览器（localStorage）
+- 不同用户的数据完全隔离
+- API 返回时 Bark Key 脱敏显示
 
-- `GET /api/categories` - 获取分类列表
-- `GET /api/stats` - 获取统计信息
-- `GET /api/health` - 健康检查
-- `POST /api/scrape` - 手动触发爬取
+## API 接口
+
+### 产品
+
+```
+GET  /api/products              # 产品列表（支持分类、排序、筛选）
+GET  /api/products/:id          # 产品详情
+GET  /api/products/:id/history  # 价格历史
+GET  /api/categories            # 分类列表
+GET  /api/filter-options        # 筛选选项（芯片/内存/存储等）
+GET  /api/stats                 # 统计信息
+```
+
+### 订阅
+
+```
+POST   /api/new-arrival-subscriptions              # 创建新品订阅
+GET    /api/new-arrival-subscriptions?bark_key=xxx # 获取我的订阅
+PUT    /api/new-arrival-subscriptions/:id          # 更新订阅
+DELETE /api/new-arrival-subscriptions/:id          # 删除订阅
+PATCH  /api/new-arrival-subscriptions/:id/pause    # 暂停订阅
+PATCH  /api/new-arrival-subscriptions/:id/resume   # 恢复订阅
+```
+
+### 通知历史
+
+```
+GET /api/notification-history?bark_key=xxx  # 获取通知历史
+```
 
 ## 目录结构
 
 ```
 apple-price/
-├── backend/                 # Go 后端
-│   ├── cmd/server/         # 主程序入口
-│   ├── internal/
-│   │   ├── api/           # HTTP handlers
-│   │   ├── scraper/       # 翻新产品爬虫
-│   │   ├── notify/        # Bark 通知服务
-│   │   ├── store/         # SQLite 数据库
-│   │   ├── model/         # 数据模型
-│   │   └── config/        # 配置管理
-│   └── data/              # 数据存储目录
-├── frontend/              # React 前端
-│   ├── src/
-│   │   ├── components/   # 组件
-│   │   ├── pages/        # 页面
-│   │   ├── hooks/        # 自定义 hooks
-│   │   ├── services/     # API 调用
-│   │   └── utils/        # 工具函数
-│   └── public/
-├── config/               # 配置文件
-└── docker-compose.yml    # 容器编排
+├── backend/
+│   ├── cmd/server/          # 主程序
+│   └── internal/
+│       ├── api/             # HTTP 接口
+│       ├── scraper/         # 产品爬虫
+│       ├── notify/          # 通知服务
+│       ├── store/           # 数据存储
+│       └── config/          # 配置管理
+├── frontend/
+│   └── src/
+│       ├── components/      # React 组件
+│       └── utils/           # 工具函数
+├── img0.png                 # 截图：产品列表
+├── img1.png                 # 截图：通知设置
+└── docker-compose.yml
 ```
-
-## Bark 推送通知配置
-
-本项目使用 [Bark](https://github.com/Finb/Bark) 作为 iOS 推送通知服务。Bark 是一款开源的自定义推送工具，支持通过 API 发送通知到 iOS 设备。
-
-### 获取 Bark Key
-
-1. **下载 Bark App**
-   - 在 App Store 搜索 "Bark" 并下载
-   - 或访问官网: https://github.com/Finb/Bark
-
-2. **获取推送 Key**
-   - 打开 Bark App
-   - 首页会显示你的推送 Key（类似：`xxxxx` 的一串字符）
-   - 点击复制即可
-
-3. **配置订阅**
-   - 在产品页面点击"订阅通知"
-   - 粘贴你的 Bark Key
-   - 可选：设置目标价格，低于该价格时才会通知
-
-### 新品订阅
-
-新品订阅允许你订阅特定类型的产品上架通知：
-
-- **分类筛选**: 选择 Mac、iPad、iPhone、Watch 等
-- **价格区间**: 设置最低/最高价格范围
-- **关键词**: 产品名称包含指定关键词时通知
-
-### 通知类型
-
-| 通知类型 | 触发条件 |
-|---------|---------|
-| 价格变动 | 订阅的产品价格发生变化 |
-| 目标价提醒 | 产品价格降至目标价以下 |
-| 新品上架 | 符合条件的新产品上架 |
-
-## 配置说明
-
-### 后端环境变量
-
-| 变量 | 说明 | 默认值 |
-|-----|------|-------|
-| `ENVIRONMENT` | 环境 | `development` |
-| `HOST` | 监听地址 | `0.0.0.0` |
-| `PORT` | 端口 | `8080` |
-| `CORS_ORIGINS` | CORS 允许源 | `*` |
-| `SCRAPER_INTERVAL` | 爬取间隔 | `5m` |
-| `SCRAPER_USER_AGENT` | 爬虫 UA | 默认值 |
-| `DATA_DIR` | 数据目录 | `./data` |
 
 ## 致谢
 
-- [Bark](https://github.com/Finb/Bark) - 优秀的 iOS 自定义推送通知工具，本项目使用 Bark 作为推送通知服务
+- [Bark](https://github.com/Finb/Bark) - 优秀的 iOS 自定义推送工具
 
 ## 许可证
 
-MIT
+[MIT](LICENSE)

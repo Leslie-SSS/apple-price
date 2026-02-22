@@ -30,6 +30,8 @@ type StoreInterface interface {
 	GetLastScrapeTime() time.Time
 	Save() error
 	GetAllProducts() []*model.Product
+	GetScraperStatus() *model.ScraperStatus
+	UpdateScraperStatus(status *model.ScraperStatus) error
 }
 
 // PriceChangeNotifier interface for price change notifications
@@ -128,9 +130,21 @@ func (s *Scheduler) runScrape() {
 	startTime := time.Now()
 	log.Println("Starting scrape cycle...")
 
+	// Record running status
+	s.store.UpdateScraperStatus(&model.ScraperStatus{
+		LastScrapeTime:   startTime,
+		LastScrapeStatus: "running",
+	})
+
 	products, err := s.scraper.ScrapeAll()
 	if err != nil {
 		log.Printf("Scrape error: %v", err)
+		// Record failed status
+		s.store.UpdateScraperStatus(&model.ScraperStatus{
+			LastScrapeTime:   startTime,
+			LastScrapeStatus: "failed",
+			LastScrapeError:  err.Error(),
+		})
 		return
 	}
 
@@ -196,6 +210,14 @@ func (s *Scheduler) runScrape() {
 	duration := time.Since(startTime)
 	log.Printf("Scrape cycle completed in %v. Products: %d, Price changes: %d, New products: %d",
 		duration, len(products), priceChangeCount, newProductCount)
+
+	// Record success status
+	s.store.UpdateScraperStatus(&model.ScraperStatus{
+		LastScrapeTime:   time.Now(),
+		LastScrapeStatus: "success",
+		ProductsScraped:  len(products),
+		Duration:         duration.Milliseconds(),
+	})
 }
 
 // ScrapeNow triggers an immediate scrape

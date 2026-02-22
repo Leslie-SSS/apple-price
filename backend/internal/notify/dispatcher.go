@@ -2,8 +2,10 @@ package notify
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"apple-price/internal/model"
 )
@@ -11,6 +13,8 @@ import (
 // StoreInterface for updating notified product IDs
 type StoreInterface interface {
 	UpdateNotifiedProductIDs(subscriptionID, productID string) error
+	AddNotificationHistory(history *model.NotificationHistory) error
+	IncrementNotificationCount(id string) error
 }
 
 // Dispatcher handles notification dispatch for price changes
@@ -21,9 +25,10 @@ type Dispatcher struct {
 }
 
 // NewDispatcher creates a new notification dispatcher
-func NewDispatcher(bark *BarkService) *Dispatcher {
+func NewDispatcher(bark *BarkService, store StoreInterface) *Dispatcher {
 	return &Dispatcher{
-		bark: bark,
+		bark:  bark,
+		store: store,
 	}
 }
 
@@ -127,9 +132,18 @@ func (d *Dispatcher) NotifyNewArrival(product *model.Product, subscriptions []*m
 		return nil
 	}
 
+	if store == nil {
+		return nil
+	}
+
 	for _, sub := range subscriptions {
-		// Skip disabled subscriptions
-		if !sub.Enabled {
+		// Skip disabled or paused subscriptions
+		if !sub.Enabled || sub.Paused {
+			continue
+		}
+
+		// Skip if no Bark Key configured for this subscription
+		if sub.BarkKey == "" {
 			continue
 		}
 
@@ -137,11 +151,15 @@ func (d *Dispatcher) NotifyNewArrival(product *model.Product, subscriptions []*m
 		var notifiedIDs []string
 		if sub.NotifiedProductIDs != "" {
 			if err := json.Unmarshal([]byte(sub.NotifiedProductIDs), &notifiedIDs); err == nil {
+				alreadyNotified := false
 				for _, id := range notifiedIDs {
 					if id == product.ID {
-						// Already notified, skip
-						continue
+						alreadyNotified = true
+						break
 					}
+				}
+				if alreadyNotified {
+					continue // Skip to next subscription
 				}
 			}
 		}
@@ -151,31 +169,78 @@ func (d *Dispatcher) NotifyNewArrival(product *model.Product, subscriptions []*m
 			continue
 		}
 
-		// Send Bark notification
-		if sub.BarkKey != "" && bark != nil {
-			if err := bark.SendNewArrivalNotification(
+		// Send Bark notification using subscription's Bark Key
+		if bark != nil {
+			var err error
+			// Use enhanced notification with specs
+			if err = bark.SendNewArrivalNotificationEnhanced(
 				sub.BarkKey,
 				product.Name,
-				product.Price,
 				product.Category,
+				product.Price,
+				product.Discount,
+				product.ImageURL,
 				product.ProductURL,
+				product.SpecsDetail,
 			); err != nil {
 				log.Printf("Bark new arrival notification failed for %s: %v", sub.ID, err)
+
+				// Record failed notification history
+				d.recordNotificationHistory(store, sub.ID, sub.BarkKey, product, "failed", err.Error())
 				continue
 			}
 
-			log.Printf("New arrival notification sent to %s for product %s", sub.Name, product.Name)
+			log.Printf("New arrival notification sent for subscription %s, product %s", sub.Name, product.Name)
 
-			// Update store with notified product ID
-			if store != nil {
-				if err := store.UpdateNotifiedProductIDs(sub.ID, product.ID); err != nil {
-					log.Printf("Failed to update notified_product_ids for %s: %v", sub.ID, err)
-				}
+			// Record successful notification history
+			d.recordNotificationHistory(store, sub.ID, sub.BarkKey, product, "sent", "")
+
+			// Update notified product IDs and increment count
+			if err := store.UpdateNotifiedProductIDs(sub.ID, product.ID); err != nil {
+				log.Printf("Failed to update notified_product_ids for %s: %v", sub.ID, err)
+			}
+			if err := store.IncrementNotificationCount(sub.ID); err != nil {
+				log.Printf("Failed to increment notification count for %s: %v", sub.ID, err)
 			}
 		}
 	}
 
 	return nil
+}
+
+// recordNotificationHistory records a notification in history
+func (d *Dispatcher) recordNotificationHistory(store StoreInterface, subscriptionID string, barkKey string, product *model.Product, status, errorMsg string) {
+	// Mask the Bark key for privacy
+	maskedKey := ""
+	if len(barkKey) > 0 {
+		maskedKey = barkKey[:4] + "****" + barkKey[len(barkKey)-4:]
+	}
+
+	history := &model.NotificationHistory{
+		ID:              generateHistoryID(),
+		SubscriptionID:  subscriptionID,
+		ProductID:       product.ID,
+		ProductName:     product.Name,
+		ProductCategory: product.Category,
+		ProductPrice:    product.Price,
+		ProductImageURL: product.ImageURL,
+		ProductSpecs:    product.SpecsDetail,
+		NotificationType: "new_arrival",
+		Status:          status,
+		ErrorMessage:    errorMsg,
+		BarkKey:         barkKey,
+		BarkKeyMasked:   maskedKey,
+		CreatedAt:       time.Now(),
+	}
+
+	if err := store.AddNotificationHistory(history); err != nil {
+		log.Printf("Failed to record notification history: %v", err)
+	}
+}
+
+// generateHistoryID generates a unique ID for notification history
+func generateHistoryID() string {
+	return fmt.Sprintf("nh-%d", time.Now().UnixNano())
 }
 
 // matchesSubscription checks if a product matches the subscription criteria
@@ -194,6 +259,21 @@ func (d *Dispatcher) matchesSubscription(product *model.Product, sub *model.NewA
 		}
 	}
 
+	// Check model filter
+	if len(sub.Models) > 0 {
+		modelMatch := false
+		productName := product.Name
+		for _, model := range sub.Models {
+			if contains(productName, model) {
+				modelMatch = true
+				break
+			}
+		}
+		if !modelMatch {
+			return false
+		}
+	}
+
 	// Check price range
 	if sub.MinPrice > 0 && product.Price < sub.MinPrice {
 		return false
@@ -206,12 +286,71 @@ func (d *Dispatcher) matchesSubscription(product *model.Product, sub *model.NewA
 	if len(sub.Keywords) > 0 {
 		keywordMatch := false
 		for _, kw := range sub.Keywords {
-			if contains(product.Name, kw) {
+			if contains(product.Name, kw) || contains(product.Specs, kw) {
 				keywordMatch = true
 				break
 			}
 		}
 		if !keywordMatch {
+			return false
+		}
+	}
+
+	// Check chip filter
+	if len(sub.Chips) > 0 {
+		chipMatch := false
+		productSpecsLower := toLower(product.Specs + " " + product.Name)
+		for _, chip := range sub.Chips {
+			if containsIgnoreCase(productSpecsLower, toLower(chip)) {
+				chipMatch = true
+				break
+			}
+		}
+		if !chipMatch {
+			return false
+		}
+	}
+
+	// Check storage filter
+	if len(sub.Storages) > 0 {
+		storageMatch := false
+		productSpecsLower := toLower(product.Specs)
+		for _, storage := range sub.Storages {
+			if containsIgnoreCase(productSpecsLower, toLower(storage)) {
+				storageMatch = true
+				break
+			}
+		}
+		if !storageMatch {
+			return false
+		}
+	}
+
+	// Check memory filter
+	if len(sub.Memories) > 0 {
+		memoryMatch := false
+		productSpecsLower := toLower(product.Specs)
+		for _, memory := range sub.Memories {
+			if containsIgnoreCase(productSpecsLower, toLower(memory)) {
+				memoryMatch = true
+				break
+			}
+		}
+		if !memoryMatch {
+			return false
+		}
+	}
+
+	// Check stock status filter
+	if len(sub.StockStatuses) > 0 {
+		stockMatch := false
+		for _, status := range sub.StockStatuses {
+			if product.StockStatus == status {
+				stockMatch = true
+				break
+			}
+		}
+		if !stockMatch {
 			return false
 		}
 	}

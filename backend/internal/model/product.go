@@ -49,23 +49,71 @@ type Subscription struct {
 type NewArrivalSubscription struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`                // User-defined name for this subscription
+	Description       string    `json:"description,omitempty"` // User notes
 	Categories        []string  `json:"categories"`          // Filter by categories (empty = all)
+	Models            []string  `json:"models,omitempty"`            // Filter by product models (MacBook Pro, iPad Pro, etc.)
+	Chips             []string  `json:"chips,omitempty"`             // Filter by chip models (M1 Pro, M2 Max, etc.)
+	Storages          []string  `json:"storages,omitempty"`          // Filter by storage (256GB, 512GB, etc.)
+	Memories          []string  `json:"memories,omitempty"`          // Filter by memory (8GB, 16GB, etc.)
+	StockStatuses     []string  `json:"stock_statuses,omitempty"`     // Filter by stock status (available, limited)
 	MaxPrice          float64   `json:"max_price"`           // Maximum price filter (0 = no limit)
 	MinPrice          float64   `json:"min_price"`           // Minimum price filter (0 = no limit)
 	Keywords          []string  `json:"keywords"`            // Product name must contain these keywords
 	BarkKey           string    `json:"bark_key"`
 	NotifiedProductIDs string    `json:"notified_product_ids"` // JSON array of product IDs that have been notified
 	Enabled           bool      `json:"enabled"`
+	Paused            bool      `json:"paused"`                        // Paused by user
+	NotificationCount int       `json:"notification_count"`             // Number of notifications sent
+	LastNotifiedAt    time.Time `json:"last_notified_at,omitempty"`    // Last notification time
 	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at,omitempty"`
+}
+
+// NotificationHistory represents a record of sent notification
+type NotificationHistory struct {
+	ID               string    `json:"id"`
+	SubscriptionID   string    `json:"subscription_id"`
+	ProductID        string    `json:"product_id"`
+	ProductName      string    `json:"product_name"`
+	ProductCategory  string    `json:"product_category"`
+	ProductPrice     float64   `json:"product_price"`
+	ProductImageURL  string    `json:"product_image_url"`
+	ProductSpecs     string    `json:"product_specs"`     // JSON: parsed specs
+	NotificationType string    `json:"notification_type"` // new_arrival, price_drop
+	Status           string    `json:"status"`            // sent, failed
+	ErrorMessage     string    `json:"error_message,omitempty"`
+	BarkKey          string    `json:"-"`                 // Full key for filtering, not exposed in JSON
+	BarkKeyMasked    string    `json:"bark_key_masked"`
+	CreatedAt        time.Time `json:"created_at"`
+	ReadAt           *time.Time `json:"read_at,omitempty"`
+}
+
+// ParsedSpecs represents parsed product specifications
+type ParsedSpecs struct {
+	Chip         string `json:"chip,omitempty"`         // M1 Pro, M2 Max, etc.
+	Memory       string `json:"memory,omitempty"`       // 8GB, 16GB, etc.
+	Storage      string `json:"storage,omitempty"`       // 256GB, 512GB, etc.
+	ScreenSize   string `json:"screen_size,omitempty"`  // 14", 16", etc.
+	Color        string `json:"color,omitempty"`         // 深空黑, 银色, etc.
+}
+
+// ScraperStatus represents the scraper health status
+type ScraperStatus struct {
+	LastScrapeTime   time.Time `json:"last_scrape_time"`
+	LastScrapeStatus string    `json:"last_scrape_status"` // success, failed, running, never
+	LastScrapeError  string    `json:"last_scrape_error,omitempty"`
+	ProductsScraped  int       `json:"products_scraped"`
+	Duration         int64     `json:"duration_ms"`
 }
 
 // Stats represents system statistics
 type Stats struct {
 	TotalProducts      int            `json:"total_products"`
-	AvailableProducts int            `json:"available_products"`
-	Categories        map[string]int `json:"categories"`
-	LastScrapeTime    time.Time      `json:"last_scrape_time"`
-	TotalSubscriptions int           `json:"total_subscriptions"`
+	AvailableProducts  int            `json:"available_products"`
+	Categories         map[string]int `json:"categories"`
+	LastScrapeTime     time.Time      `json:"last_scrape_time"`
+	TotalSubscriptions int            `json:"total_subscriptions"`
+	ScraperStatus      *ScraperStatus `json:"scraper_status,omitempty"`
 }
 
 // GenerateID creates a unique product ID based on category and specs

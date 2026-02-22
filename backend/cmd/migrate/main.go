@@ -151,9 +151,9 @@ func main() {
 	for _, sub := range subs {
 		if !*dryRun {
 			_, err = db.Exec(`
-				INSERT INTO subscriptions (id, product_id, bark_key, email, created_at)
-				VALUES (?, ?, ?, ?, ?)
-			`, sub.ID, sub.ProductID, sub.BarkKey, sub.Email, sub.CreatedAt.Unix())
+				INSERT INTO subscriptions (id, product_id, bark_key, created_at)
+				VALUES (?, ?, ?, ?)
+			`, sub.ID, sub.ProductID, sub.BarkKey, sub.CreatedAt.Unix())
 			if err == nil {
 				subCount++
 			}
